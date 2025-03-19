@@ -1,4 +1,5 @@
 import boto3
+import paramiko.ed25519key
 from conexion import ConectorAWS
 import paramiko
 
@@ -51,7 +52,7 @@ def crear_y_adjuntar_ebs(id_instancia):
     return volumen['VolumeId']
 
 # Función para montar el volumen EBS y copiar un archivo
-def montar_y_copiar_archivo(id_instancia, volume_id, archivo_local, ruta_remota):
+def montar_y_copiar_archivo(id_instancia, archivo_local, ruta_remota):
     try:
         # Conectar a la instancia EC2
         instancia = ec2.Instance(id_instancia)
@@ -72,30 +73,33 @@ def montar_y_copiar_archivo(id_instancia, volume_id, archivo_local, ruta_remota)
         ip_publica = instancia.public_ip_address
         print(f'La instancia {id_instancia} está en ejecución con IP pública {ip_publica}')
         
-        key = paramiko.RSAKey.from_private_key_file("ruta/a/tu/clave.pem")
+        key = paramiko.Ed25519Key.from_private_key_file("claves.pem")
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         ssh.connect(ip_publica, username="ec2-user", pkey=key)
+        print('Conexión SSH establecida.')
 
         # Montar el volumen EBS
         comandos = [
-            f"sudo mkfs -t ext4 /dev/{volume_id}",  # Cambiar a /dev/sdf
-            "sudo mkdir /mnt/ebs",
-            f"sudo mount /dev/{volume_id} /mnt/ebs"  # Cambiar a /dev/sdf
+            f"sudo mkdir {ruta_remota}", 
+            f"sudo chmod 777 {ruta_remota}"  # Añadir permisos de escritura
         ]
         for comando in comandos:
             stdin, stdout, stderr = ssh.exec_command(comando)
             stdout.channel.recv_exit_status()
+            print(f'Ejecutado comando: {comando}')
+            print(f'Salida: {stdout.read().decode()}')
+            print(f'Error: {stderr.read().decode()}')
 
         # Copiar el archivo al volumen montado
         sftp = ssh.open_sftp()
+        print(f'Iniciando la transferencia del archivo {archivo_local} a {ruta_remota}')
         sftp.put(archivo_local, ruta_remota)
         sftp.close()
         ssh.close()
         print(f'Archivo {archivo_local} copiado a {ruta_remota} en la instancia {id_instancia}.')
     except Exception as e:
         print(f'Ocurrió un error: {e}')
-
 
 # Función para crear un sistema de archivos EFS y montarlo
 def crear_y_montar_efs():
@@ -212,8 +216,8 @@ if __name__ == "__main__":
     '''
 
     print('Cerar un EBS y asociarlo a un EC2 y añadir una archivo')
-    volume_id = crear_y_adjuntar_ebs('i-063b41408d8e4402a')
-    montar_y_copiar_archivo('i-063b41408d8e4402a', volume_id, 'prueba.txt', '/mnt/ebs/archivo.txt')
+    #crear_y_adjuntar_ebs('i-063b41408d8e4402a')
+    montar_y_copiar_archivo('i-063b41408d8e4402a', '/home/alumnadotarde/nube/prueba.txt', '/home/ec2-user/archivos')
 
     '''
     crear_y_montar_efs()

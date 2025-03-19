@@ -2,8 +2,6 @@ import boto3
 from conexion import ConectorAWS
 import paramiko
 
-
-
 conector = ConectorAWS()
 ec2 = conector.conectarse()
 ec2_client = conector.conectarse_client()
@@ -54,32 +52,49 @@ def crear_y_adjuntar_ebs(id_instancia):
 
 # Función para montar el volumen EBS y copiar un archivo
 def montar_y_copiar_archivo(id_instancia, volume_id, archivo_local, ruta_remota):
-    # Conectar a la instancia EC2
-    instancia = ec2.Instance(id_instancia)
-    instancia.wait_until_running()
-    ip_publica = instancia.public_ip_address
+    try:
+        # Conectar a la instancia EC2
+        instancia = ec2.Instance(id_instancia)
+        
+        # Imprimir el estado actual de la instancia
+        print(f'Estado actual de la instancia {id_instancia}: {instancia.state["Name"]}')
+        
+        # Esperar hasta que la instancia esté en ejecución
+        if instancia.state["Name"] != "running":
+            instancia.start()
+            instancia.wait_until_running()
+            print(f'La instancia {id_instancia} ha sido encendida.')
+        else:
+            print(f'La instancia {id_instancia} ya está en ejecución.')        
+        
+        # Actualizar la información de la instancia
+        instancia.reload()
+        ip_publica = instancia.public_ip_address
+        print(f'La instancia {id_instancia} está en ejecución con IP pública {ip_publica}')
+        
+        key = paramiko.RSAKey.from_private_key_file("ruta/a/tu/clave.pem")
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        ssh.connect(ip_publica, username="ec2-user", pkey=key)
 
-    key = paramiko.RSAKey.from_private_key_file("ruta/a/tu/clave.pem")
-    ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    ssh.connect(ip_publica, username="ec2-user", pkey=key)
+        # Montar el volumen EBS
+        comandos = [
+            f"sudo mkfs -t ext4 /dev/{volume_id}",  # Cambiar a /dev/sdf
+            "sudo mkdir /mnt/ebs",
+            f"sudo mount /dev/{volume_id} /mnt/ebs"  # Cambiar a /dev/sdf
+        ]
+        for comando in comandos:
+            stdin, stdout, stderr = ssh.exec_command(comando)
+            stdout.channel.recv_exit_status()
 
-    # Montar el volumen EBS
-    comandos = [
-        f"sudo mkfs -t ext4 /dev/{volume_id}",  # Cambiar a /dev/sdf
-        "sudo mkdir /mnt/ebs",
-        f"sudo mount /dev/{volume_id} /mnt/ebs"  # Cambiar a /dev/sdf
-    ]
-    for comando in comandos:
-        stdin, stdout, stderr = ssh.exec_command(comando)
-        stdout.channel.recv_exit_status()
-
-    # Copiar el archivo al volumen montado
-    sftp = ssh.open_sftp()
-    sftp.put(archivo_local, ruta_remota)
-    sftp.close()
-    ssh.close()
-    print(f'Archivo {archivo_local} copiado a {ruta_remota} en la instancia {id_instancia}.')
+        # Copiar el archivo al volumen montado
+        sftp = ssh.open_sftp()
+        sftp.put(archivo_local, ruta_remota)
+        sftp.close()
+        ssh.close()
+        print(f'Archivo {archivo_local} copiado a {ruta_remota} en la instancia {id_instancia}.')
+    except Exception as e:
+        print(f'Ocurrió un error: {e}')
 
 
 # Función para crear un sistema de archivos EFS y montarlo
@@ -197,9 +212,8 @@ if __name__ == "__main__":
     '''
 
     print('Cerar un EBS y asociarlo a un EC2 y añadir una archivo')
-    crear_y_adjuntar_ebs('i-063b41408d8e4402a')
     volume_id = crear_y_adjuntar_ebs('i-063b41408d8e4402a')
-    montar_y_copiar_archivo(id_instancia, volume_id, 'ruta/a/tu/archivo.txt', '/mnt/ebs/archivo.txt')
+    montar_y_copiar_archivo('i-063b41408d8e4402a', volume_id, 'prueba.txt', '/mnt/ebs/archivo.txt')
 
     '''
     crear_y_montar_efs()

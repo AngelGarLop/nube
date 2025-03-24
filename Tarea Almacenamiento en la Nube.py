@@ -125,6 +125,16 @@ def crear_y_montar_efs(id_instancia, archivo_local, ruta_remota):
         file_system_id = sistema_archivos['FileSystemId']
         print(f'Sistema de archivos EFS {file_system_id} creado.')
 
+        # Esperar hasta que el sistema de archivos EFS esté disponible
+        while True:
+            response = efs.describe_file_systems(FileSystemId=file_system_id)
+            estado = response['FileSystems'][0]['LifeCycleState']
+            if estado == 'available':
+                print(f'Sistema de archivos EFS {file_system_id} está disponible.')
+                break
+            print('Esperando a que el sistema de archivos EFS esté disponible...')
+            time.sleep(10)
+
         # Conectar a la instancia EC2
         instancia = ec2.Instance(id_instancia)
         
@@ -144,6 +154,13 @@ def crear_y_montar_efs(id_instancia, archivo_local, ruta_remota):
         ip_publica = instancia.public_ip_address
         print(f'La instancia {id_instancia} está en ejecución con IP pública {ip_publica}')
         
+        efs.create_mount_target(
+        FileSystemId=file_system_id,
+        SubnetId=instancia.subnet_id,
+        SecurityGroups=[instancia.security_groups[0]['GroupId']]
+)
+
+
         # Asegúrate de que la ruta al archivo de clave privada sea correcta
         ruta_clave_privada = "claves.pem"
         
@@ -159,11 +176,11 @@ def crear_y_montar_efs(id_instancia, archivo_local, ruta_remota):
 
         # Montar el sistema de archivos EFS
         comandos = [
-            f"sudo apt-get update",
-            f"sudo apt-get install -y amazon-efs-utils",
+            "sudo yum update -y",
+            "sudo yum install -y amazon-efs-utils",
             f"sudo mkdir -p {ruta_remota}",
             f"sudo chmod 777 {ruta_remota}",
-            f"sudo mount -t efs {file_system_id}:/ {ruta_remota}"
+            f"sudo mount -t efs {file_system_id}.efs.us-east-1.amazonaws.com:/ {ruta_remota}"
         ]
         for comando in comandos:
             stdin, stdout, stderr = ssh.exec_command(comando)
@@ -175,7 +192,7 @@ def crear_y_montar_efs(id_instancia, archivo_local, ruta_remota):
         # Copiar el archivo al sistema de archivos EFS montado
         sftp = ssh.open_sftp()
         print(f'Iniciando la transferencia del archivo {archivo_local} a {ruta_remota}')
-        sftp.put(archivo_local,ruta_remota+"/"+archivo_local)
+        sftp.put(archivo_local, f"{ruta_remota}/{archivo_local}")
         sftp.close()
         ssh.close()
         print(f'Archivo {archivo_local} copiado a {ruta_remota} en la instancia {id_instancia}.')
@@ -187,7 +204,7 @@ def descargar_archivo_s3(nombre_bucket, nombre_archivo, ruta_destino):
     s3.download_file(nombre_bucket, nombre_archivo, ruta_destino)
     print(f'Archivo {nombre_archivo} descargado del bucket {nombre_bucket} a {ruta_destino}.')
 
-def crear_bucket_s3(nombre_bucket, clase_almacenamiento='STANDARD'):
+def crear_bucket_s3(nombres_buckets, clase_almacenamiento='STANDARD'):
     for nombre_bucket in nombres_buckets:
         try:
             s3.create_bucket(Bucket=nombre_bucket)
@@ -293,7 +310,6 @@ def crear_s3_glacier_deep_archive(nombre_bucket):
     descargar_archivo_glacier(nombre_bucket , 'data/sample4.txt', 'sample4.txt')
     
 
-
 def habilitar_versionado_s3(nombre_bucket):
     s3.put_bucket_versioning(
         Bucket=nombre_bucket,
@@ -324,8 +340,21 @@ def ejecutar_consulta(query):
 def crear_base_datos_athena(nombre_base_datos):
 
     ejecutar_consulta(f'CREATE DATABASE IF NOT EXISTS {nombre_base_datos}')
-    ejecutar_consulta(f'CREATE EXTERNAL TABLE IF NOT EXISTS {nombre_base_datos}.usuarios (id INT, name STRING, age INT) ROW FORMAT DELIMITED FIELDS TERMINATED BY "," LOCATION "s3://prueba-bucket-67890/data/"')
-
+    ejecutar_consulta(f'''
+    CREATE EXTERNAL TABLE IF NOT EXISTS {nombre_base_datos}.usuarios (
+        id INT,
+        name STRING,
+        age INT
+    )
+    ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'
+    WITH SERDEPROPERTIES (
+        "separatorChar" = ",",
+        "quoteChar" = "\\"",
+        "skip.header.line.count" = "1"
+    )
+    LOCATION 's3://prueba-bucket-67890/data2/'
+    TBLPROPERTIES ('has_encrypted_data'='false');
+''')
     
     return nombre_base_datos
 def esperar_resultado(query_execution_id):
@@ -336,17 +365,17 @@ def esperar_resultado(query_execution_id):
             return estado_actual
         time.sleep(2)
 
-def consultar_s3_con_athena(base_datos, tabla, consulta):
+def consultar_s3_con_athena(base_datos, tabla):
     crear_base_datos_athena(base_datos)
 
     consultas = [
     f"SELECT * FROM {base_datos}.{tabla};",
-    "SELECT COUNT(*) AS total_registros FROM mi_base_datos.sample_table;",
-    "SELECT age, COUNT(*) AS cantidad FROM mi_base_datos.sample_table GROUP BY age;"
+    f"SELECT COUNT(*) AS total_registros FROM {base_datos}.{tabla};",
+    f"SELECT age FROM {base_datos}.{tabla} WHERE age>25;"
     ]
 
     for i, consulta in enumerate(consultas, start=1):
-        print(f"\n⏳ Ejecutando consulta {i}...")
+        print(f"\nEjecutando consulta {i}...")
         query_id = ejecutar_consulta(consulta)
         estado = esperar_resultado(query_id)
         
@@ -364,18 +393,18 @@ def consultar_s3_con_athena(base_datos, tabla, consulta):
 
 # Ejemplo de uso
 if __name__ == "__main__":
-    '''
+    
     print('Crear una instancia EC2, ejecutarla, pararla y eliminarla ')
     gestionar_instancia_ec2()
-    '''
-    '''
+    
+    
     print('Cerar un EBS y asociarlo a un EC2 y añadir una archivo')
     #crear_y_adjuntar_ebs('i-063b41408d8e4402a')
     montar_y_copiar_archivo('i-063b41408d8e4402a', 'prueba.txt', '/home/ec2-user/archivos')
     
     print('Crear un EFS, montarlo y añadir un archivo')
     crear_y_montar_efs('i-063b41408d8e4402a', 'prueba.txt' , '/home/ec2-user/archivos2')
-    '''
+    
 
     print('Crear un S3 Estándar, crear un cubo y añadir varias carpetas con un objeto que sea un archivo csv con varios datos para trabajar con él a posteriori y obtener le objeto')
     nombres_buckets = [
@@ -386,7 +415,7 @@ if __name__ == "__main__":
         'prueba-bucket-mnopqr',
         'prueba-bucket-stuvwx'
     ]
-    '''
+    
     anadir_csv_s3(crear_bucket_s3(nombres_buckets))
 
     print('Crear S3 Estándar - Acceso poco frecuente, crear un cubo y añadir un objeto y obtener le objeto')
@@ -398,19 +427,19 @@ if __name__ == "__main__":
 
     print('Crear S3 Glacier, crear un cubo y añadir un objeto y obtener le objeto')
     crear_s3_glacier(crear_bucket_s3(nombres_buckets,'Glacier'))
-    '''
-    '''
+    
+    
     print('Crear S3 Glacier Deep Archive, crear un cubo y añadir un objeto y obtener le objeto ')
     crear_s3_glacier_deep_archive(crear_bucket_s3(nombres_buckets,'Deep_Archive'))
-    '''
+    
 
-    '''
+    
     print('Hablitar el control de versiones de S3 mediante comandos y mostrar un ejemplo de un objeto modificado y mostrar dos versiones')
-    habilitar_versionado_s3('prueba-bucket-67890')'
-    '''
+    habilitar_versionado_s3('prueba-bucket-67890')
+    
 
     print('Realizar 3 consultas diferentes sobre el objeto .csv del S3 usando AWS Athena')
-    consultar_s3_con_athena(crear_base_datos_athena('Trabajo_nube'), 'usuarios', 'SELECT * FROM sample.csv LIMIT 10;')
+    consultar_s3_con_athena(crear_base_datos_athena('Trabajo_nube'), 'usuarios')
     
     
 

@@ -180,7 +180,8 @@ def crear_y_montar_efs(id_instancia, archivo_local, ruta_remota):
             "sudo yum install -y amazon-efs-utils",
             f"sudo mkdir -p {ruta_remota}",
             f"sudo chmod 777 {ruta_remota}",
-            f"sudo mount -t efs {file_system_id}.efs.us-east-1.amazonaws.com:/ {ruta_remota}"
+            f"sudo mount -t efs {file_system_id}:/ {ruta_remota}"
+            #f"sudo mount -t efs {file_system_id}.efs.us-east-1.amazonaws.com:/ {ruta_remota}"
         ]
         for comando in comandos:
             stdin, stdout, stderr = ssh.exec_command(comando)
